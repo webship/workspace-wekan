@@ -6,7 +6,8 @@
 // It runs in the project's web container, where Wekan answers at http://wekan:8080, started by the plugin's functions:
 //   node wekan-site.mjs <verb> [list]
 // with what it needs (accounts, passwords, a login) on its input, as the base64 of a JSON object, never on a command
-// line. A token it makes is printed only by the verb `token`, on its own line (TOKEN …), for the tool to store.
+// line. A token it makes is printed only by the verb `token`, on its own line (TOKEN …), for the tool to store; the
+// logins it opens for its own work are revoked when it ends (POST /users/logout), so a run leaves no login behind.
 //
 // Verbs:
 //   install    the workspace account as the site's first account, Wekan's administrator; sign-up turned off.
@@ -47,11 +48,20 @@ async function rest(method, route, body, token) {
   return data;
 }
 
+/** The login tokens this run opened: each is revoked when the run ends, so a run leaves no login behind. */
+const opened = [];
+
 /** A login of an account: its id and a login token. */
 async function login(username, password) {
   const d = await rest('POST', '/users/login', { username, password });
   if (!d || !d.token || !d.id) throw new Error(`Wekan gave ${username} no login token`);
+  opened.push(String(d.token));
   return { id: String(d.id), token: String(d.token), username };
+}
+
+/** Revoke the login tokens this run opened (Wekan's POST /users/logout, with the token itself). */
+async function closeAll() {
+  for (const token of opened.splice(0)) await rest('POST', '/users/logout', {}, token).catch(() => {});
 }
 
 /**
@@ -168,6 +178,7 @@ async function install(payload) {
   if (!adm) {
     try {
       const d = await rest('POST', '/users/register', { username: user, email: mail, password });
+      opened.push(String(d.token));
       adm = { id: String(d.id), token: String(d.token), username: user };
     } catch (e) {
       throw new Error(`${user} cannot log in, and Wekan took no sign-up for it (${e.message}): build the site again from nothing`);
@@ -190,21 +201,29 @@ async function accounts(payload) {
   const sessions = new Map();
   for (const row of rows) {
     let id = ids.get(row.login);
+    let s = null;
     if (!id) {
       const made = await rest('POST', '/api/users/', { username: row.login, email: row.mail, password: row.password }, adm.token);
       id = String(made._id);
       console.log(`  ${row.login}: made`);
     } else if (row.action !== 'lock') {
       await rest('PUT', `/api/users/${id}`, { action: 'enableLogin' }, adm.token);
-      await asPerson(adm.token, (call) => call('setPassword', row.password, id));
-      console.log(`  ${row.login}: its password given back, and it may log in`);
+      // Its password given back only when it no longer signs in with it: Wekan ends every session of an account whose
+      // password an administrator sets, a connected dashboard's among them.
+      s = await login(row.login, row.password).catch(() => null);
+      if (!s) {
+        await asPerson(adm.token, (call) => call('setPassword', row.password, id));
+        console.log(`  ${row.login}: its password given back, and it may log in`);
+      } else {
+        console.log(`  ${row.login}: there, and it may log in`);
+      }
     }
     if (row.action === 'lock') {
       await rest('PUT', `/api/users/${id}`, { action: 'disableLogin' }, adm.token);
       console.log(`  ${row.login}: kept from logging in`);
       continue;
     }
-    const s = await login(row.login, row.password);
+    if (!s) s = await login(row.login, row.password);
     await asPerson(s.token, (call) => call('setOwnProfile', row.name, initialsOf(row.name)));
     sessions.set(row.login, s);
   }
@@ -380,7 +399,9 @@ async function counts(payload) {
   console.log(`board 1`);
   for (const k of ['lists', 'swimlanes', 'labels', 'members']) console.log(`${k} ${n(k)}`);
   console.log(`cards ${n('cards')} (archived ${(ex.cards || []).filter((c) => c.archived).length})`);
-  for (const k of ['comments', 'checklists', 'checklistItems']) console.log(`${k} ${n(k)}`);
+  console.log(`comments ${n('comments')}`);
+  console.log(`checklists ${n('checklists')}`);
+  console.log(`checklist items ${n('checklistItems')}`);
   const sprintCards = (ex.cards || []).filter((c) => c.scrum && c.scrum.sprintId).length;
   console.log(`cards in a sprint ${sprintCards}`);
   console.log(`spent hours ${(ex.cards || []).reduce((s, c) => s + Number(c.spentTime || 0), 0)}`);
@@ -392,9 +413,15 @@ if (!verbs[verb]) {
   console.error(`wekan-site.mjs: no verb ${verb || '(none)'}; one of ${Object.keys(verbs).join(', ')}`);
   process.exit(2);
 }
+let failed = null;
 try {
   await verbs[verb](await readInput());
 } catch (e) {
-  console.error(`Wekan: ${e.message}`);
+  failed = e;
+} finally {
+  await closeAll();
+}
+if (failed) {
+  console.error(`Wekan: ${failed.message}`);
   process.exit(1);
 }
