@@ -76,8 +76,11 @@ container against Wekan's REST API at `http://wekan:8080`. With `--install` the 
 Wekan makes its first account the administrator; the sign-up is turned off after it. The administrator makes the
 other accounts, and each account's board role is set by the board's administrator. The passwords come on the script's
 input, never on a command line, never in a log. What Wekan's REST API does not have (a person's full name, a password
-given back, Scrum planning and its sprint, a day of logged time) goes through the methods Wekan's own screens call,
-at the release the builder runs.
+given back, Scrum planning and its sprint, a day of logged time) goes through the methods Wekan's own screens call.
+Those parts depend on Wekan 13.33, the release the builder pins, and never run against a Wekan of your own: when one of
+those calls fails, the builder says which part of the sample content it could not make (a line starting `WARNING:`,
+and a `Not made` line at the end) and goes on with the rest. The step pack's CI builds its site with the same script
+on 13.33 and fails on such a line, and its features read each of those parts, so a new pin shows a break at once.
 
 The site's own values (the address, the database's address, the mail catcher) are kept in `wekan/env` of the project,
 which only you can read. The builder never prints them.

@@ -98,6 +98,29 @@ test('the site script works through Wekan\'s REST API from the web container, an
   assert.match(tidy, /if \(!onlyList\) await rest\('DELETE'/, 'with list, nothing is removed');
 });
 
+test('what the site script makes through Wekan\'s own methods is guarded: a part that fails is said, and the rest goes on', () => {
+  // Every range of the script inside a part(…) call, found by its parentheses.
+  const guarded: Array<[number, number]> = [];
+  for (const m of SITE.matchAll(/\bpart\(/g)) {
+    let depth = 0;
+    let end = m.index as number;
+    for (let i = (m.index as number) + 4; i < SITE.length; i += 1) {
+      if (SITE[i] === '(') depth += 1;
+      if (SITE[i] === ')') { depth -= 1; if (depth === 0) { end = i; break; } }
+    }
+    guarded.push([m.index as number, end]);
+  }
+  const calls = [...SITE.matchAll(/call\('(setOwnProfile|setPassword|scrum\.[A-Za-z]+|timeEntry[A-Za-z]*)'/g)];
+  assert.ok(calls.length >= 9, `the methods Wekan's own screens call (${calls.length})`);
+  for (const c of calls) {
+    assert.ok(guarded.some(([a, b]) => (c.index as number) > a && (c.index as number) < b), `${c[1]} is called inside a part(…) that says what it could not make`);
+  }
+  assert.match(SITE, /console\.log\(`WARNING: \$\{what\} could not be made through Wekan's own methods/, 'a part that fails is said, on a line of its own');
+  assert.match(SITE, /These depend on Wekan \$\{RELEASE\}, the release the builder pins; the rest goes on\./);
+  assert.match(SITE, /^const RELEASE = process\.env\.WEKAN_RELEASE \|\| '13\.33';$/m);
+  assert.match(read('README.md'), /depend on Wekan 13\.33, the release the builder pins/, 'the README says so');
+});
+
 test('the runtimes: DDEV only for now; another is refused before anything is changed, and so is a machine with too little memory', () => {
   assert.match(read('scripts/args/arg-wekan.sh'), /choices=\['ddev'\]/);
   const build = fn('wekan_build');

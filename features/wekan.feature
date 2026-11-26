@@ -51,4 +51,6 @@ Feature: The Wekan plugin on the dashboard
      When I select "Search (Wekan's own syntax)" from "view"
       And I fill in "q" with "greting"
       And I press the key "Enter" on the element "input[name=q]"
-     Then eventually I should see "\"greting\" · 1 card" within 30 seconds
+     Then eventually I should see "Search (Wekan's own syntax) ·" within 30 seconds
+      And I should see "The usage line spells greeting as greting"
+      And I should not see "The greeting script says Helo instead of Hello"

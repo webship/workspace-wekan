@@ -1,7 +1,9 @@
 // The Wekan builder's script: the site's first account, its default accounts and their roles in the sample board, the
 // sample content, and the clean-up after a stopped test run, through Wekan's own REST API. What that API does not have
 // (a person's full name, a password given back, Scrum planning and a sprint, a day of logged time) goes through the
-// methods Wekan's own screens call over its websocket, at the release the builder runs (13.33 by default).
+// methods Wekan's own screens call over its websocket, which depend on the release the builder pins (13.33 by default):
+// when one of those fails, the script says which part it could not make (a line starting "WARNING:", and a "Not made"
+// line at the end) and goes on with the rest. The step pack's CI fails on such a line, so a new pin shows a break.
 //
 // It runs in the project's web container, where Wekan answers at http://wekan:8080, started by the plugin's functions:
 //   node wekan-site.mjs <verb> [list]
@@ -113,6 +115,26 @@ async function asPerson(token, work) {
   try { return await work(s.call); } finally { s.close(); }
 }
 
+/** The release of Wekan the builder pins, as the project's web container has it. */
+const RELEASE = process.env.WEKAN_RELEASE || '13.33';
+
+/** The parts that could not be made through Wekan's own methods: said when each fails, and again at the end. */
+const notMade = [];
+
+/**
+ * A part made through Wekan's own methods (what its REST API does not have), which depend on the release the builder
+ * pins: when it fails, the script says which part it could not make, and goes on with the rest.
+ */
+async function part(what, work) {
+  try {
+    return await work();
+  } catch (e) {
+    notMade.push(what);
+    console.log(`WARNING: ${what} could not be made through Wekan's own methods (${String(e && e.message || e).slice(0, 200)}). These depend on Wekan ${RELEASE}, the release the builder pins; the rest goes on.`);
+    return undefined;
+  }
+}
+
 const initialsOf = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
 const today = () => new Date().toISOString().slice(0, 10);
 const dayFrom = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
@@ -189,7 +211,7 @@ async function install(payload) {
     throw new Error(`${user} is on the site but is not Wekan's administrator (Wekan makes its first account the administrator, and the site had accounts already): build the site again from nothing`);
   }
   await rest('PUT', '/api/settings', { disableRegistration: true }, adm.token);
-  await asPerson(adm.token, (call) => call('setOwnProfile', name || user, initialsOf(name || user)));
+  await part(`the full name of ${user}`, () => asPerson(adm.token, (call) => call('setOwnProfile', name || user, initialsOf(name || user))));
   console.log(`ADMIN ${user}`);
   console.log(`${user} is Wekan's administrator, and the sign-up is off: an administrator makes the accounts.`);
 }
@@ -212,8 +234,11 @@ async function accounts(payload) {
       // password an administrator sets, a connected dashboard's among them.
       s = await login(row.login, row.password).catch(() => null);
       if (!s) {
-        await asPerson(adm.token, (call) => call('setPassword', row.password, id));
-        console.log(`  ${row.login}: its password given back, and it may log in`);
+        const given = await part(`the password of ${row.login} given back`, async () => {
+          await asPerson(adm.token, (call) => call('setPassword', row.password, id));
+          return true;
+        });
+        if (given) console.log(`  ${row.login}: its password given back, and it may log in`);
       } else {
         console.log(`  ${row.login}: there, and it may log in`);
       }
@@ -223,13 +248,22 @@ async function accounts(payload) {
       console.log(`  ${row.login}: kept from logging in`);
       continue;
     }
-    if (!s) s = await login(row.login, row.password);
-    await asPerson(s.token, (call) => call('setOwnProfile', row.name, initialsOf(row.name)));
+    if (!s) s = await login(row.login, row.password).catch(() => null);
+    if (!s) {
+      console.log(`WARNING: ${row.login} does not sign in with its password, so its full name and its role were not set.`);
+      notMade.push(`the full name and the role of ${row.login}`);
+      continue;
+    }
+    await part(`the full name of ${row.login}`, () => asPerson(s.token, (call) => call('setOwnProfile', row.name, initialsOf(row.name))));
     sessions.set(row.login, s);
   }
   ids = await accountsOf(adm);
   const ownerRow = rows.find((r) => r.role === 'owner');
-  if (!ownerRow || !sessions.has(ownerRow.login)) return;
+  if (!ownerRow || !sessions.has(ownerRow.login)) {
+    if (ownerRow && !rows.every((r) => r.action === 'lock')) console.log(`WARNING: ${ownerRow.login} does not sign in, so the board ${BOARD} and its roles were not made.`);
+    sayNotMade();
+    return;
+  }
   const owner = sessions.get(ownerRow.login);
   const b = await boardOf(owner);
   const members = new Map((b.board.members || []).map((m) => [String(m.userId), m]));
@@ -252,6 +286,12 @@ async function accounts(payload) {
     }
   }
   console.log(`The accounts are in their roles of ${BOARD}: ${rows.map((r) => `${r.login} ${ROLES[r.role] ? (r.role === 'owner' ? 'its administrator' : r.role === 'reader' ? 'read-only' : 'a normal member') : 'not on it'}`).join(', ')}.`);
+  sayNotMade();
+}
+
+/** What could not be made through Wekan's own methods, said once more at the end. */
+function sayNotMade() {
+  if (notMade.length) console.log(`Not made, through Wekan's own methods on Wekan ${RELEASE}: ${notMade.join('; ')}.`);
 }
 
 /** The cards of the board, archived ones too, with its lists, people and comments (Wekan's own export of the board). */
@@ -295,7 +335,7 @@ async function content(payload) {
     await rest('POST', `/api/boards/${b.id}/cards/${one.id}/checklists`, { title: 'Checks', items: ['Fix the spelling in greeting.sh'] }, owner.token);
   }
   // Scrum planning on the board, with Sprint 1 active and cards 1 and 2 in it; a day of the member's logged time on card 1.
-  await asPerson(owner.token, async (call) => {
+  await part('Scrum planning with Sprint 1 active and the first two cards in it', () => asPerson(owner.token, async (call) => {
     let data = await call('scrum.getBoardData', b.id);
     if (!data.settings || data.settings.enabled !== true) {
       await call('scrum.configure', b.id, { enabled: true }, Number(data.settingsRevision || 0));
@@ -311,15 +351,16 @@ async function content(payload) {
       const card = (data.cards || []).find((x) => String(x._id) === made[key].id);
       if (!card || !card.scrum || card.scrum.sprintId !== sprint._id) await call('scrum.updateCard', b.id, made[key].id, { sprintId: sprint._id }, null);
     }
-  });
-  await asPerson(member.token, async (call) => {
+  }));
+  await part('half an hour of the member\'s time on the first card', () => asPerson(member.token, async (call) => {
     const time = await call('timeEntriesOfCard', one.id);
     if (!time || !Array.isArray(time.entries) || time.entries.length === 0) {
       await call('timeEntryAdd', one.id, { date: today(), hours: 0.5, note: 'Found where the greeting is spelled' });
       console.log('  half an hour of the member\'s time on card 1');
     }
-  });
-  console.log(`The sample content of ${BOARD} is there: its three cards, the label, the assignee, the comment, the checklist, Sprint 1 and the logged time.`);
+  }));
+  console.log(`The sample content of ${BOARD} is there: its three cards, the label, the assignee, the comment and the checklist${notMade.length ? '' : ', Sprint 1 and the logged time'}.`);
+  sayNotMade();
 }
 
 async function tidy(payload, onlyList) {
