@@ -1,0 +1,64 @@
+# Wekan of this project: Wekan's own image, served at the project's address, on the project's own MongoDB 7 (a
+# replica set of one, as Wekan's reference setup runs it, so a board updates live). Wekan needs a MongoDB-compatible
+# database, so this project runs MongoDB as its own service rather than the Workspace's usual MariaDB: each
+# application brings what it needs. Both images are pinned (.env). The project's web container keeps the mail catcher,
+# and runs the builder's script against Wekan at http://wekan:8080. Written by the Wekan builder of the workspace (the
+# plugin's docker-compose.wekan.yaml); build again rather than editing by hand. The site's own values are in wekan/env,
+# which only you can read.
+services:
+  web:
+    environment:
+      - HTTP_EXPOSE=8093:80,8025:8025
+      - HTTPS_EXPOSE=8457:80,8026:8025
+  mongo:
+    image: "${WEKAN_MONGO_IMAGE:-docker.io/library/mongo:7.0.48}"
+    container_name: ddev-${DDEV_SITENAME}-mongo
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: ${DDEV_APPROOT}
+    restart: "no"
+    expose:
+      - "27017"
+    # A replica set of one (rs0), initiated once it answers: Wekan follows its changes as they happen.
+    command:
+      - sh
+      - -c
+      - |
+        mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &
+        until mongosh --host 127.0.0.1 --quiet --eval 'try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) } quit(1) }' > /dev/null 2>&1 ; do sleep 2 ; done
+        wait
+    healthcheck:
+      test: ["CMD", "mongosh", "--host", "127.0.0.1", "--quiet", "--eval", "try { quit(rs.status().ok === 1 && db.hello().isWritablePrimary ? 0 : 1) } catch (e) { quit(1) }"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+    volumes:
+      - db:/data/db
+  wekan:
+    image: "${WEKAN_IMAGE:-ghcr.io/wekan/wekan:v13.33}"
+    container_name: ddev-${DDEV_SITENAME}-wekan
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: ${DDEV_APPROOT}
+    restart: "no"
+    expose:
+      - "8080"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file:
+      - ${DDEV_APPROOT}/wekan/env
+    volumes:
+      # What Wekan keeps beside its database (attachments, avatars), named after the project.
+      - files:/data
+    environment:
+      VIRTUAL_HOST: ${DDEV_HOSTNAME}
+      HTTP_EXPOSE: "80:8080"
+      HTTPS_EXPOSE: "443:8080"
+# Named after the project, so removing the project removes them with it, and a new build starts empty.
+volumes:
+  db:
+    name: ddev-${DDEV_SITENAME}-wekan-db
+  files:
+    name: ddev-${DDEV_SITENAME}-wekan-files

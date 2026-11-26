@@ -1,0 +1,60 @@
+# Labels for core/config/plugin.wekan.settings.yml, merged into the Settings page.
+url:
+  label: Wekan address
+  info: 'The site the dashboard reads cards from: https://<name>.ddev.site for one the builder made, or your own. No trailing slash.'
+username:
+  label: Username
+  info: 'The username of the account the dashboard reads (and, with writes on, writes) as.'
+token:
+  label: Login token
+  info: 'A login token of that account, so the dashboard acts as that person: `bash cmd-tools-wekan-cli.sh <site> --connect <login>` makes one through Wekan''s API (POST /users/login on your own Wekan). Wekan keeps it for 90 days by default. Never printed.'
+allow_writes:
+  label: Writes to Wekan (cards)
+  info: 'Off: the AI works on a branch and nothing leaves this machine. On: you may comment on a card, move it to another list or archive it, label it and assign it, each a click after a preview, each a line in actions.log.'
+  options:
+    "false": "Off — nothing is written to Wekan (default)"
+    "true": "On — each write is your click after a preview"
+max_agents:
+  label: Author sessions at once
+  info: 'How many AI sessions may work cards at the same time. Each is a whole session in a project.'
+  number: { min: 1, max: 8, step: 1 }
+default_scope:
+  label: Default Wekan board
+  info: 'The title of the Wekan board a workspace project works against when it remembers none, as Webship site.'
+scopes:
+  label: Wekan boards the list may switch to
+  info: 'A list of board titles. Empty is any board the account is on. Edit it in the Raw YAML tab.'
+work_in:
+  label: Where the AI works
+  info: 'A new branch in the project (a running site shows the change), or a git worktree outside the workspace folders (the project stays as it is).'
+  options:
+    branch: "A branch in the project (default)"
+    worktree: "A worktree outside the workspace folders"
+sandbox:
+  label: Sandbox for the author session
+  info: 'Required: Claude Code''s sandboxed Bash (no network, credentials denied), and no session without it. On Ubuntu 24.04 bubblewrap needs its AppArmor profile (see the tracker''s README). Off: your choice, said in the form.'
+  options:
+    required: "Required (default)"
+    "off": "Off — the session is not sandboxed"
+network_domains:
+  label: Domains the sandbox allows
+  info: 'The package registries the project needs (registry.npmjs.org, repo.packagist.org…). None by default. Edit it in the Raw YAML tab.'
+allow_web:
+  label: Web tools in the author session
+  info: 'WebFetch and WebSearch. Off by default: a link in a card is not opened.'
+  options:
+    "false": "Off (default)"
+    "true": "On"
+comments_from:
+  label: Comments the AI reads
+  info: 'Members: only comments by the board''s administrators and the members who may change its cards (default). All, or none.'
+  options:
+    members: "Administrators and members (default)"
+    all: "All comments"
+    none: "No comments"
+outsider_items:
+  label: Cards from outside the board
+  info: 'Made, or last edited, by a read-only or comment-only member of the board, or someone it does not have. Analyze: analyze only, unless you tick a confirmation that names them. Refuse: analyze only.'
+  options:
+    analyze: "Analyze only, unless confirmed by name (default)"
+    refuse: "Analyze only"
