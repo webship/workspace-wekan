@@ -35,8 +35,12 @@ The site is Wekan's own image (`ghcr.io/wekan/wekan`) on the project's own Mongo
 of one as Wekan's reference setup runs it, so a board updates live. Wekan needs a MongoDB-compatible database, so the
 project has no MariaDB: each application brings what it needs. Both images are pinned, never `latest`. On DDEV Wekan
 takes the project's address, `https://mysite.ddev.site`; the project's web container keeps the mail catcher at
-`https://mysite.ddev.site:8026`, where the site's mail goes. Docker Compose, Podman and Kubernetes are not proven for
-Wekan yet: the builder says so and stops before it changes anything.
+`https://mysite.ddev.site:8026`, where the site's mail goes. With `--runtime docker`, `podman` or `kubernetes` the
+builder works through the Workspace's runtime layer, in the same layout: Wekan's image and MongoDB's are services of
+the runtime's own project, each with its data in a volume of the project's own, and the web container (a Node.js 24
+stack) runs nginx as the host user, passing the project's address to Wekan, websockets included, at the address the
+runtime gives it; the stack's Mailpit catches its mail. Lando and Docksal are not proven for Wekan yet: the builder
+says so and stops before it changes anything.
 
 The builder asks for 1.5 GB of free memory (`free -m`) before it starts. The first build downloads about 600 MB for
 the two images. Build one site at a time, and stop a site you are not using.
@@ -47,7 +51,7 @@ the two images. Build one site at a time, and stop a site you are not using.
 | `--add-users` | With `--install`: the default accounts, in their roles of the board Webship site |
 | `--sample-content` | With `--install --add-users`: three cards of Webship site in its lists, a label, an assignee, a comment, a checklist, Scrum planning with Sprint 1 active, and half an hour of logged time |
 | `--release <X.Y>` | The release of the image (tagged `v<X.Y>`): 13.33 by default |
-| `--runtime ddev` | The container runtime: DDEV, the one proven for Wekan so far |
+| `--runtime <runtime>` | The container runtime: `ddev` (the default), `docker` (Docker Compose), `podman` or `kubernetes` |
 | `--launch` | Open the site when it is ready |
 
 A project of the same name is deleted first, with MongoDB's data and Wekan's files (volumes named after the project).

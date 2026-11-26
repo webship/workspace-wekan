@@ -45,7 +45,7 @@ export function assistantContext(): string {
   return [
     'Wekan (a plugin, @webship.co/workspace-wekan), the open-source kanban board: a site is built with',
     '`bash cmd-wekan-project.sh <name> --install --add-users --sample-content` from a sites folder (dev, test, sandboxes, demos):',
-    'Wekan\'s own image (13.33 by default, `--release`) on the project\'s own MongoDB 7 (Wekan needs a MongoDB-compatible database, so the project has no MariaDB), on DDEV at https://<name>.ddev.site; other runtimes are not proven for it yet.',
+    'Wekan\'s own image (13.33 by default, `--release`) on the project\'s own MongoDB 7 (Wekan needs a MongoDB-compatible database, so the project has no MariaDB), on DDEV at https://<name>.ddev.site, or with `--runtime docker`, `podman` or `kubernetes` in the same layout through the runtime layer (Wekan\'s image and MongoDB\'s as services of the runtime\'s own project, the web container\'s nginx passing the project\'s address to Wekan), at the address the runtime gives it; Lando and Docksal are not proven for it yet.',
     'The builder asks for 1.5 GB of free memory before it starts.',
     '`--install` makes the workspace account Wekan\'s first account, its administrator, and turns the sign-up off;',
     '`--add-users` adds the default accounts (owner: the administrator of the board Webship site, member: a normal member, reader: a read-only member; stranger: not on it), each @example.com, logging in with its username;',

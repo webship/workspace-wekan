@@ -10,8 +10,14 @@
 #     project's own MongoDB (the mongo service: a replica set of one, as Wekan's reference setup runs it), whose data
 #     is in a volume named after the project. Wekan needs a MongoDB-compatible database, so the project has no MariaDB:
 #     each application brings what it needs. The project's web container keeps the mail catcher.
-# Docker Compose, Podman, Kubernetes, Lando and Docksal are not proven yet: asked for one, the builder says so and
-# changes nothing.
+#   - Docker Compose, Podman and Kubernetes (--runtime docker|podman|kubernetes), through the core's runtime layer, in
+#     the same layout: Wekan's own image unchanged as a service of the project (rt_service wekan), MongoDB 7 as another
+#     (rt_service mongo, the same replica set of one), each with its data in a volume of the project's own, and no
+#     MariaDB. The web container is a Node.js 24 stack: its nginx, run as the host user (rt_serve), passes the project's
+#     address to Wekan, websockets included, and the site script runs there with Node.js, as on DDEV. The address is
+#     the one the runtime gives it; the stack's Mailpit catches the site's mail. Wekan's image has no shell, which the
+#     runtime layer needs of a web container's image, so it is not the web container.
+# Lando and Docksal are not proven yet: asked for one, the builder says so and changes nothing.
 # The site's accounts and content go through Wekan's own REST API from the project's web container (wekan-site.mjs);
 # what that API does not have goes through the methods Wekan's own screens call, at the release the builder runs.
 # What the script reads (accounts, passwords) comes on its input, never on a command line. Wekan's own image only.
@@ -38,6 +44,9 @@ readonly WEKAN_MONGO_IMAGE='docker.io/library/mongo:7.0.48';
 # values.
 readonly WEKAN_BOARD_NAME='Webship site';
 readonly WEKAN_FILES='wekan';
+
+# On another runtime than DDEV: the port the web container's nginx listens on.
+readonly WEKAN_SERVE_PORT=8080;
 
 # The free memory a build asks for, in MB: Wekan (Node.js) and MongoDB.
 readonly WEKAN_MEMORY_MB=1536;
@@ -70,12 +79,15 @@ function wekan_runtime() {
   if declare -f runtime_of > /dev/null ; then runtime_of "$@" ; else echo 'ddev' ; fi
 }
 
-# The address of the site in this folder (or of a new build named PROJECT_NAME, on DDEV).
+# The address of the site in this folder (or of a new build named PROJECT_NAME, on DDEV); on another runtime the one
+# the runtime gives it.
 function wekan_url() {
+  if [ "$(wekan_runtime)" != 'ddev' ] && declare -f rt_url > /dev/null ; then rt_url ; return ; fi
   echo "https://${1:-${PROJECT_NAME}}.ddev.site" ;
 }
 
-# Is this folder a Wekan site of this plugin? On DDEV the builder leaves .ddev/config.wekan.yaml in it.
+# Is this folder a Wekan site of this plugin? On DDEV the builder leaves .ddev/config.wekan.yaml in it; on another
+# runtime the project carries the plugin's claim.
 function wekan_is_project() {
   local project_path="$1" ;
   [ -f "${project_path}/.ddev/config.wekan.yaml" ] && return 0 ;
@@ -98,21 +110,25 @@ function wekan_enter_project() {
   cd "${project_path}" || return 1 ;
 }
 
-# The site's copy of the plugin's script (wekan/), brought up to the installed plugin's, so a plugin updated with
-# --install reaches the sites built before it. The site's own values (wekan/env) are left as they are.
+# The site's copies of the plugin's files (wekan/), brought up to the installed plugin's, so a plugin updated with
+# --install reaches the sites built before it: the site script, and on another runtime than DDEV the web container's
+# server script and its nginx settings. The site's own values (wekan/env) are left as they are.
 function wekan_refresh_files() {
-  local project_path="$1" from="${WORKSPACE_SCRIPTS}/plugins/wekan" f ;
+  local project_path="$1" from="${WORKSPACE_SCRIPTS}/plugins/wekan" f source ;
   [ -d "${project_path}/${WEKAN_FILES}" ] || return 0 ;
-  for f in wekan-site.mjs ; do
-    if [ -f "${from}/${f}" ] && ! cmp -s "${from}/${f}" "${project_path}/${WEKAN_FILES}/${f}" ; then
-      cp "${from}/${f}" "${project_path}/${WEKAN_FILES}/${f}" || return 1 ;
+  for f in wekan-site.mjs wekan-serve.sh nginx.conf ; do
+    source="${f}" ; [ "${f}" = 'nginx.conf' ] && source='wekan-proxy.conf' ;
+    # The server's files only where the site has them: a site on DDEV has none.
+    [ "${f}" = 'wekan-site.mjs' ] || [ -f "${project_path}/${WEKAN_FILES}/${f}" ] || continue ;
+    if [ -f "${from}/${source}" ] && ! cmp -s "${from}/${source}" "${project_path}/${WEKAN_FILES}/${f}" ; then
+      cp "${from}/${source}" "${project_path}/${WEKAN_FILES}/${f}" || return 1 ;
     fi
   done
 }
 
-# The release of Wekan the site runs: the tag of its image (.ddev/.env).
+# The release of Wekan the site runs: the tag of its image, as the site's values keep it (wekan/env).
 function wekan_version() {
-  sed -n "s|^WEKAN_IMAGE=.*:v\\(.*\\)\$|\\1|p" "${WORKSPACE_ROOT}/${doc_name}/${PROJECT_NAME}/.ddev/.env" 2>/dev/null | head -n 1 ;
+  sed -n 's/^WEKAN_RELEASE=//p' "${WORKSPACE_ROOT}/${doc_name}/${PROJECT_NAME}/${WEKAN_FILES}/env" 2>/dev/null | head -n 1 ;
 }
 
 # The free memory of this machine, in MB (what the kernel says is available).
@@ -120,12 +136,13 @@ function wekan_free_memory() {
   awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null ;
 }
 
-# Write the project's files: Wekan's and MongoDB's services (.ddev/docker-compose.wekan.yaml), their pinned images in
-# .ddev/.env, the claim (.ddev/config.wekan.yaml) and the plugin's script.
+# Write the project's files: the plugin's script; on DDEV Wekan's and MongoDB's services
+# (.ddev/docker-compose.wekan.yaml), their pinned images in .ddev/.env and the claim (.ddev/config.wekan.yaml); on
+# another runtime the claim, the web container's stack and its nginx, and Wekan's and MongoDB's services.
 function wekan_write_config() {
-  local project_path="$1" release="$2" ;
+  local project_path="$1" release="$2" runtime="${3:-ddev}" ;
   local from="${WORKSPACE_SCRIPTS}/plugins/wekan" f ;
-  for f in docker-compose.wekan.yaml wekan-site.mjs ; do
+  for f in docker-compose.wekan.yaml wekan-site.mjs wekan-serve.sh wekan-proxy.conf ; do
     if [ ! -f "${from}/${f}" ] ; then
       echo "${f} is not in ${from}: install the plugin (plugins.sh --install wekan)." ;
       return 1 ;
@@ -133,6 +150,47 @@ function wekan_write_config() {
   done
   mkdir -p "${project_path}/${WEKAN_FILES}" || return 1 ;
   cp "${from}/wekan-site.mjs" "${project_path}/${WEKAN_FILES}/" || return 1 ;
+
+  if [ "${runtime}" != 'ddev' ] ; then
+    # Another runtime: Wekan's image and MongoDB's as services of the project, the web container a Node.js stack whose
+    # nginx passes the project's address to Wekan. MongoDB starts as on DDEV: a replica set of one, initiated once it
+    # answers, which Wekan waits for (its driver looks for the set's primary for 30 seconds before it gives up).
+    cp "${from}/wekan-serve.sh" "${project_path}/${WEKAN_FILES}/" || return 1 ;
+    cp "${from}/wekan-proxy.conf" "${project_path}/${WEKAN_FILES}/nginx.conf" || return 1 ;
+    # Wekan's env file is there from the start, only its owner's: wekan_write_env fills it once the runtime has given
+    # the project its address.
+    ( umask 077 && : >> "${project_path}/${WEKAN_FILES}/env" ) || return 1 ;
+    ( cd "${project_path}" \
+      && rt_claim wekan \
+      && rt_stack node 24 \
+      && rt_web_build wekan <<'DOCKEREOF'
+# nginx in the web container, run as the host user from the project's own settings (wekan/nginx.conf): it passes the
+# project's address to Wekan's service, websockets included.
+RUN apt-get update && apt-get install -y --no-install-recommends nginx && rm -rf /var/lib/apt/lists/*
+DOCKEREOF
+    ) || return 1 ;
+    # On Kubernetes, two more things, found by stopping and starting a project on kind:
+    #   - MongoDB's own name answers through its Service, whose address leads to the pod only once the pod is ready:
+    #     started again, MongoDB looked for itself there, did not find itself in its replica set (REMOVED) and had no
+    #     primary. The name is its own container there, from the start.
+    #   - A stop scales the project to none and a start back to one at once, so the new pod can start while the old one
+    #     still holds the data folder: its MongoDB then stopped at once ("DBPathInUse") while the shell kept the
+    #     container up, without a database. MongoDB stops when its container is asked to (the shell passes the signal
+    #     on), and a container whose MongoDB stopped stops too, so Kubernetes starts it again.
+    local itself='' pid='' alive='' ;
+    if [ "${runtime}" = 'kubernetes' ] ; then
+      itself='grep -qx "127.0.0.1 mongo" /etc/hosts || echo "127.0.0.1 mongo" >> /etc/hosts ; ' ;
+      pid=' pid=$! ; trap "kill -TERM $pid ; wait $pid" TERM INT ;' ;
+      alive='kill -0 $pid 2> /dev/null || exit 1 ; ' ;
+    fi
+    ( cd "${project_path}" \
+      && rt_service mongo "${WEKAN_MONGO_IMAGE}" --port 27017 --volume /data/db \
+        --command "sh -c '${itself}mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &${pid} until mongosh --host 127.0.0.1 --quiet --eval \"try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: \\\"rs0\\\", members: [{ _id: 0, host: \\\"mongo:27017\\\" }] }) } quit(1) }\" > /dev/null 2>&1 ; do ${alive}sleep 2 ; done ; wait'" \
+      && rt_service wekan "${WEKAN_IMAGE_REPOSITORY}:v${release}" --port 8080 --env-file "${WEKAN_FILES}/env" --volume /data \
+      && rt_serve "${WEKAN_SERVE_PORT}" "bash ${WEKAN_FILES}/wekan-serve.sh" ) || return 1 ;
+    return 0 ;
+  fi
+
   cp "${from}/docker-compose.wekan.yaml" "${project_path}/.ddev/docker-compose.wekan.yaml" || return 1 ;
   printf 'WEKAN_IMAGE=%s\nWEKAN_MONGO_IMAGE=%s\n' "${WEKAN_IMAGE_REPOSITORY}:v${release}" "${WEKAN_MONGO_IMAGE}" > "${project_path}/.ddev/.env" || return 1 ;
   cat > "${project_path}/.ddev/config.wekan.yaml" <<YAMLEOF
@@ -146,7 +204,9 @@ YAMLEOF
 # The site's own values (wekan/env, which only you can read): the project's MongoDB, the address, the mail catcher.
 # Wekan keeps no secret of its own in its environment: its accounts and their login tokens are in its database.
 function wekan_write_env() {
-  local project_path="$1" release="$2" base_url="$3" ;
+  local project_path="$1" release="$2" base_url="$3" runtime="${4:-ddev}" mail='web' ;
+  # The mail catcher: DDEV's web container on DDEV, the stack's own Mailpit elsewhere.
+  [ "${runtime}" != 'ddev' ] && mail='mail' ;
   ( umask 077 && cat > "${project_path}/${WEKAN_FILES}/env" <<ENVEOF
 # The values of this Wekan site, made by the Wekan builder of the workspace. Read by Wekan's container; never printed.
 WEKAN_RELEASE=${release}
@@ -157,7 +217,7 @@ ROOT_URL=${base_url}
 PORT=8080
 WITH_API=true
 WRITABLE_PATH=/data
-MAIL_URL=smtp://web:1025/?ignoreTLS=true
+MAIL_URL=smtp://${mail}:1025/?ignoreTLS=true
 MAIL_FROM=Wekan <wekan@example.com>
 BROWSER_POLICY_ENABLED=true
 CARDS_LOADING=all
@@ -181,9 +241,23 @@ function wekan_wait() {
     sleep 3 ;
   done
   echo "Wekan did not answer (its sign-in page: ${code:-none}); the end of its log and of MongoDB's:" ;
-  ddev logs -s wekan --tail 30 < /dev/null 2>/dev/null ;
-  ddev logs -s mongo --tail 10 < /dev/null 2>/dev/null ;
+  wekan_service_log wekan 30 ;
+  wekan_service_log mongo 10 ;
   return 1 ;
+}
+
+# The end of the log of a service of the project in this folder (wekan, mongo): DDEV's for its services; on another
+# runtime the runtime's own, as the runtime layer runs the project (its `ddev logs` is the web container's).
+function wekan_service_log() {
+  local service="$1" lines="$2" found rt root ;
+  if [ "$(wekan_runtime)" = 'ddev' ] ; then ddev logs -s "${service}" --tail "${lines}" < /dev/null 2>/dev/null ; return 0 ; fi
+  found="$(rt_find_project "$PWD" 2>/dev/null)" || return 0 ;
+  rt="${found%% *}" ; root="${found#* }" ;
+  case "${rt}" in
+    docker|podman) rt_dc "${rt}" "${root}" logs --tail "${lines}" "${service}" < /dev/null 2>/dev/null ;;
+    kubernetes) rt_kubectl -n "$(rt_k8s_ns "${root}")" logs "deploy/${service}" --tail "${lines}" < /dev/null 2>/dev/null ;;
+  esac
+  return 0 ;
 }
 
 # Run a verb of wekan-site.mjs (install, accounts, content, tidy, list, token, counts) in the project's web container,
@@ -240,8 +314,12 @@ function wekan_build() {
   local project_path="${WORKSPACE_ROOT}/${doc_name}/${PROJECT_NAME}" ;
   local runtime ; runtime="$(cd "${WORKSPACE_ROOT}/${doc_name}" && wekan_runtime)" ;
 
-  if [ "${runtime}" != 'ddev' ] ; then
-    echo "Wekan builds on DDEV for now (--runtime ddev), not on ${runtime}: that runtime is not proven for it yet. Nothing was changed." ;
+  case "${runtime}" in
+    ddev|docker|podman|kubernetes) ;;
+    *) echo "Wekan builds on DDEV, Docker Compose, Podman and Kubernetes for now (--runtime ddev, docker, podman or kubernetes), not on ${runtime}: that runtime is not proven for it yet. Nothing was changed." ; exit 1 ;;
+  esac
+  if [ "${runtime}" != 'ddev' ] && ! declare -f rt_service > /dev/null ; then
+    echo "--runtime ${runtime} needs a Webship Workspace whose runtimes run services of a project's own (rt_service, webship/workspace#900): update the workspace, or build on DDEV. Nothing was changed." ;
     exit 1 ;
   fi
   if ! [[ "${release}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] ; then
@@ -287,13 +365,28 @@ function wekan_build() {
   cd "${project_path}" || exit 1 ;
 
   # No MariaDB: the project's database is its own MongoDB service.
-  ddev config --project-type=generic --project-name=${PROJECT_NAME} --omit-containers=db \
-    --nodejs-version=$(ddev_nodejs_version) < /dev/null || exit 1 ;
-  wekan_write_config "${project_path}" "${release}" || exit 1 ;
+  if [ "${runtime}" = 'ddev' ] ; then
+    ddev config --project-type=generic --project-name=${PROJECT_NAME} --omit-containers=db \
+      --nodejs-version=$(ddev_nodejs_version) < /dev/null || exit 1 ;
+  else
+    # The runtime's own project: Docker Compose, Podman or Kubernetes, through the runtime layer.
+    ddev config --project-type=generic --webserver-type=generic --project-name=${PROJECT_NAME} --omit-containers=db --auto < /dev/null || exit 1 ;
+  fi
+  wekan_write_config "${project_path}" "${release}" "${runtime}" || exit 1 ;
+  # The address once the runtime has given the project its port.
   local base_url ; base_url="$(wekan_url)" ;
-  wekan_write_env "${project_path}" "${release}" "${base_url}" || exit 1 ;
+  wekan_write_env "${project_path}" "${release}" "${base_url}" "${runtime}" || exit 1 ;
+  # Kubernetes takes Wekan's env file into a Secret of the project's own when the runtime writes the project's files:
+  # once more, now that the site's values are there (Docker Compose and Podman read the file when the project starts).
+  if [ "${runtime}" = 'kubernetes' ] ; then
+    ( cd "${project_path}" && ddev config < /dev/null > /dev/null ) || exit 1 ;
+  fi
 
-  echo "Starting the project, MongoDB 7 and Wekan ${release}: their images are a download of about 600 MB the first time." ;
+  if [ "${runtime}" = 'ddev' ] ; then
+    echo "Starting the project, MongoDB 7 and Wekan ${release}: their images are a download of about 600 MB the first time." ;
+  else
+    echo "Starting the project, MongoDB 7 and Wekan ${release}: their images are a download of about 600 MB the first time, and the web image is built with nginx." ;
+  fi
   ddev_up start -y < /dev/null || exit 1 ;
   wekan_wait || exit 1 ;
 
