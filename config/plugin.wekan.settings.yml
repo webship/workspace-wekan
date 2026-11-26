@@ -1,0 +1,32 @@
+# Wekan — core/config/plugin.wekan.settings.yml
+#
+# The Wekan the dashboard reads cards from: a site the builder made (https://<name>.ddev.site), or your own. The
+# username and the login token are an account's there, so the dashboard acts as that person:
+# `cmd-tools-wekan-cli.sh <site> --connect <login>` makes the token through Wekan's API. Never printed.
+# The Wekan address, without a trailing slash.
+url: CHANGE_ME
+# The username of the account the dashboard reads (and, with writes on, writes) as.
+username: CHANGE_ME
+# A login token of that account (POST /users/login on your own Wekan). Wekan keeps one for 90 days by default.
+token: CHANGE_ME
+# The cards as work items (the tracker family). See @webship.co/workspace-tracker for every key.
+# Writes to Wekan: comments, moves to another list, archiving and restoring, labels, assignees, new cards. Off by default.
+allow_writes: false
+# Author sessions at once.
+max_agents: 1
+# The Wekan board a workspace project works against when it remembers none: its title (Webship site).
+default_scope: ""
+# The Wekan boards (their titles) the list may be switched to; empty is any board the account is on.
+scopes: []
+# branch: a new branch in the project; worktree: a git worktree outside the workspace folders.
+work_in: branch
+# required: Claude Code's sandbox for the author session, and no session without it; off: a person's choice.
+sandbox: required
+# Domains the sandbox allows (the project's package registries).
+network_domains: []
+# WebFetch and WebSearch in the author session.
+allow_web: false
+# The comments a snapshot keeps: members (the board's administrators and its members who may change cards), all, none.
+comments_from: members
+# A card from outside the board (made, or last edited, by a read-only or comment-only member, or someone the board does not have): analyze (work it only after a confirmation that names its author) or refuse.
+outsider_items: analyze

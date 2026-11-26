@@ -1,0 +1,26 @@
+/**
+ * What this plugin needs from the workspace it is added to (the manifest's `needs`).
+ * The workspace reads it: github.com/webship/workspace, core/workspace-app/PLUGINS.md.
+ */
+import test from 'node:test';
+import assert from 'node:assert';
+import fs from 'fs';
+import path from 'path';
+
+// Compiled, this test runs from dist/tests, so the package root is one folder further up.
+const PKG = fs.existsSync(path.join(__dirname, '..', 'package.json')) ? path.join(__dirname, '..') : path.join(__dirname, '..', '..');
+const manifest = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).workspacePlugin;
+
+test('the manifest says what the plugin needs: a sites folder for its commands, and the folders of its AI items', () => {
+  assert.deepStrictEqual(manifest.needs, [['dev', 'test', 'sandboxes', 'demos'], 'ai-agents', 'ai-skills', 'ai-commands', 'ai-prompts']);
+  assert.deepStrictEqual(manifest.suggests, undefined);
+  assert.deepStrictEqual(manifest.needs[0], manifest.commands.workspaces, 'the alternatives are the folders the commands go to');
+  for (const kind of ['agents', 'skills', 'commands', 'prompts']) assert.ok(manifest.ai[kind].length > 0, `it ships ${kind}, which is why it needs the folder they are placed in`);
+  assert.match(fs.readFileSync(path.join(PKG, 'README.md'), 'utf8'), /^## What it needs$/m, 'and the README says so');
+});
+
+test('the manifest says in one line what the plugin is, for the Settings row', () => {
+  assert.match(manifest.summary, /^A builder for Wekan sites .{20,}/);
+  assert.ok(manifest.summary.length <= 160, 'the row shows at most 160 characters');
+  assert.strictEqual(manifest.settingsFile, 'plugin.wekan.settings.yml');
+});
