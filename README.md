@@ -73,7 +73,8 @@ the change streams a board updates live from. The project has no MariaDB.
 
 **How the accounts are made.** The builder's script (`wekan/wekan-site.mjs` of the project) runs in the project's web
 container against Wekan's REST API at `http://wekan:8080`. With `--install` the workspace account signs up first, and
-Wekan makes its first account the administrator; the sign-up is turned off after it. The administrator makes the
+Wekan makes its first account the administrator; the sign-up is turned off after it (the sign-in page offers no
+"Register", and Wekan's sign-up form then asks for an invitation code). The administrator makes the
 other accounts, and each account's board role is set by the board's administrator. The passwords come on the script's
 input, never on a command line, never in a log. What Wekan's REST API does not have (a person's full name, a password
 given back, Scrum planning and its sprint, a day of logged time) goes through the methods Wekan's own screens call.
