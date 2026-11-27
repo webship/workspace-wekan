@@ -169,25 +169,30 @@ function wekan_write_config() {
 RUN apt-get update && apt-get install -y --no-install-recommends nginx && rm -rf /var/lib/apt/lists/*
 DOCKEREOF
     ) || return 1 ;
-    # On Kubernetes, two more things, found by stopping and starting a project on kind:
+    # The shell around MongoDB, on every runtime (#12):
+    #   - it passes a stop on to MongoDB (its trap), so a project's stop is MongoDB's own clean shutdown, and ends with
+    #     MongoDB's code then too: the shell is the container's first process, which ignores the stop signal by itself,
+    #     and the engine would kill MongoDB after 10 seconds;
+    #   - it ends with MongoDB's own code (wait "$pid"), and a container whose MongoDB ended before its replica set was
+    #     initiated ends too: a crash then comes back, through the core's restart policy of a project's own services on
+    #     Docker Compose and Podman (webship/workspace#959), as Kubernetes starts a pod's container again.
+    # On Kubernetes, found by stopping and starting a project on kind:
     #   - MongoDB's own name answers through its Service, whose address leads to the pod only once the pod is ready:
     #     started again, MongoDB looked for itself there, did not find itself in its replica set (REMOVED) and had no
     #     primary. The name is its own container there, from the start.
     #   - A stop scales the project to none and a start back to one at once, so the new pod can start while the old one
-    #     still holds the data folder: its MongoDB then stopped at once ("DBPathInUse") while the shell kept the
-    #     container up, without a database. MongoDB stops when its container is asked to (the shell passes the signal
-    #     on), and a container whose MongoDB stopped stops too, so Kubernetes starts it again.
+    #     still holds the data folder: its MongoDB then stopped at once ("DBPathInUse"). The shell ends with it, so
+    #     Kubernetes starts the container again.
     # Its open files may go up to the container's hard limit, as on DDEV: Docker gives a container 1024 by default,
     # which a restore of Wekan's database went past.
-    local limit='ulimit -n "$(ulimit -Hn)" ; ' itself='' pid='' alive='' ;
+    local limit='ulimit -n "$(ulimit -Hn)" ; ' itself='' ;
+    local pid=' pid=$! ; trap "kill -TERM $pid ; wait $pid ; exit \$?" TERM INT ;' alive='kill -0 $pid 2> /dev/null || exit 1 ; ' ;
     if [ "${runtime}" = 'kubernetes' ] ; then
       itself='grep -qx "127.0.0.1 mongo" /etc/hosts || echo "127.0.0.1 mongo" >> /etc/hosts ; ' ;
-      pid=' pid=$! ; trap "kill -TERM $pid ; wait $pid" TERM INT ;' ;
-      alive='kill -0 $pid 2> /dev/null || exit 1 ; ' ;
     fi
     ( cd "${project_path}" \
       && rt_service mongo "${WEKAN_MONGO_IMAGE}" --port 27017 --volume /data/db \
-        --command "sh -c '${limit}${itself}mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &${pid} until mongosh --host 127.0.0.1 --quiet --eval \"try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: \\\"rs0\\\", members: [{ _id: 0, host: \\\"mongo:27017\\\" }] }) } quit(1) }\" > /dev/null 2>&1 ; do ${alive}sleep 2 ; done ; wait'" \
+        --command "sh -c '${limit}${itself}mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &${pid} until mongosh --host 127.0.0.1 --quiet --eval \"try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: \\\"rs0\\\", members: [{ _id: 0, host: \\\"mongo:27017\\\" }] }) } quit(1) }\" > /dev/null 2>&1 ; do ${alive}sleep 2 ; done ; wait \$pid'" \
       && rt_service wekan "${WEKAN_IMAGE_REPOSITORY}:v${release}" --port 8080 --env-file "${WEKAN_FILES}/env" --volume /data \
       && rt_serve "${WEKAN_SERVE_PORT}" "bash ${WEKAN_FILES}/wekan-serve.sh" ) || return 1 ;
     return 0 ;

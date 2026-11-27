@@ -235,16 +235,14 @@ test('on Docker Compose, Podman and Kubernetes: Wekan\'s image and MongoDB\'s as
       const itself = 'grep -qx "127.0.0.1 mongo" /etc/hosts || echo "127.0.0.1 mongo" >> /etc/hosts ; ';
       if (runtime === 'kubernetes') assert.ok(mongo[2].slice(limit.length).startsWith(itself), `${runtime}: MongoDB finds itself in its replica set from the start`);
       else assert.ok(!mongo[2].includes('/etc/hosts'), `${runtime}: the name already leads to the container itself`);
-      if (runtime === 'kubernetes') {
-        // A stop scales the project to none and a start back to one at once: the new pod's MongoDB found the old one's
-        // data folder still held and stopped, while the shell kept the container up. The shell passes a stop on, and
-        // ends when MongoDB has ended, so Kubernetes starts the container again.
-        assert.match(mongo[2].slice(limit.length + itself.length), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & pid=\$! ; trap "kill -TERM \$pid ; wait \$pid" TERM INT ; until mongosh /, runtime);
-        assert.match(mongo[2], / ; do kill -0 \$pid 2> \/dev\/null \|\| exit 1 ; sleep 2 ; done ; wait$/, `${runtime}: the container ends with MongoDB`);
-      } else {
-        assert.match(mongo[2].slice(limit.length), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & until mongosh /, runtime);
-        assert.match(mongo[2], / ; do sleep 2 ; done ; wait$/, `${runtime}: mongod stays the service's process, as on DDEV`);
-      }
+      // On every runtime (#12) the shell passes a stop on to MongoDB (its own clean shutdown), ends with MongoDB's own
+      // code (wait "$pid": a crash ends the container with a code that is not 0, so the core's restart policy, #959, or
+      // Kubernetes starts it again), and ends when MongoDB ended before its replica set was initiated. On Kubernetes the
+      // new pod's MongoDB also found the old one's data folder still held and stopped: the container ends with it.
+      const start = runtime === 'kubernetes' ? limit.length + itself.length : limit.length;
+      assert.match(mongo[2].slice(start), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & pid=\$! ; trap "kill -TERM \$pid ; wait \$pid ; exit \\\$\?" TERM INT ; until mongosh /, `${runtime}: mongod's PID kept, a stop passed on, and the shell ends with MongoDB's code then too`);
+      assert.match(mongo[2], / ; do kill -0 \$pid 2> \/dev\/null \|\| exit 1 ; sleep 2 ; done ; wait \$pid$/, `${runtime}: the container ends with MongoDB, with its code`);
+      assert.doesNotMatch(mongo[2], /; wait$/, `${runtime}: never a plain wait, which ends with 0 whatever MongoDB's code`);
       const evaluated = words(mongo[2].slice(mongo[2].indexOf('--eval '), mongo[2].indexOf(' > /dev/null')))[1];
       assert.strictEqual(evaluated, 'try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) } quit(1) }', `${runtime}: what mongosh is given, once the shell has read it`);
       assert.ok(read('scripts/docker-compose.wekan.yaml').includes(`--eval '${evaluated}'`), `${runtime}: the same as on DDEV`);
@@ -273,6 +271,42 @@ test('on Docker Compose, Podman and Kubernetes: Wekan\'s image and MongoDB\'s as
     for (const f of ['wekan-serve.sh', 'nginx.conf']) assert.ok(!fs.existsSync(path.join(d.dir, 'mysite', 'wekan', f)), `no wekan/${f} on DDEV`);
   } finally {
     removeTestDir(d.dir);
+  }
+});
+
+test('MongoDB\'s shell on Docker Compose and Podman: a crash ends the container with MongoDB\'s code, a stop is passed on to MongoDB (#12)', () => {
+  const w = written('docker', 'http://127.0.0.1:33001');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wekan-runtimes-'));
+  try {
+    const line = words(w.commandOf('mongo'))[2];
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    const log = path.join(dir, 'calls.log');
+    // MongoDB stood in: it runs until it is stopped (its own shutdown, 0), or ends with the code the test gives it.
+    const mongod = (end: string) => fs.writeFileSync(path.join(bin, 'mongod'), `#!/usr/bin/env bash\necho "mongod started" >> "${log}"\ntrap 'echo "mongod: a clean shutdown" >> "${log}" ; exit 0' TERM\n${end}\n`, { mode: 0o755 });
+    const mongosh = (code: number) => fs.writeFileSync(path.join(bin, 'mongosh'), `#!/usr/bin/env bash\nexit ${code}\n`, { mode: 0o755 });
+    const run = (stopAfter = 0) => {
+      fs.rmSync(log, { force: true });
+      const r = spawnSync('sh', ['-c', line], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, timeout: stopAfter || 20000, killSignal: 'SIGTERM' });
+      return { status: r.status, log: fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [] };
+    };
+    // A crash once the replica set answers: the container ends with MongoDB's own code.
+    mongod('sleep 3 ; exit 137');
+    mongosh(0);
+    assert.strictEqual(run().status, 137, 'a crash is not an end with 0');
+    // MongoDB ends before its replica set answers: the container ends, rather than waiting for ever.
+    mongod('sleep 1 ; exit 3');
+    mongosh(1);
+    assert.strictEqual(run().status, 1);
+    // The container is asked to stop: MongoDB gets the stop and shuts down by itself.
+    mongod('sleep 30 & wait $!');
+    mongosh(0);
+    const stopped = run(3000);
+    assert.ok(stopped.log.includes('mongod: a clean shutdown'), `MongoDB's own shutdown: ${stopped.log.join(' | ')}`);
+    assert.strictEqual(stopped.status, 0, 'the shell ended by itself once MongoDB had, with MongoDB\'s code');
+  } finally {
+    removeTestDir(dir);
+    removeTestDir(w.dir);
   }
 });
 
