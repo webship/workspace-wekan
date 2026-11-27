@@ -124,6 +124,21 @@ The project has the same layout as on DDEV:
 The project's volumes go with it when it is removed (`cmd-tools-remove.sh`), and when a project of the same name is
 built again.
 
+### Backups
+
+Wekan keeps its data in the project's own MongoDB, which is neither DDEV's database nor the runtime's: the project has
+none of those. So the plugin declares the core's hook for a platform's own database (webship/workspace#937), and every
+backup of a Wekan site asks it, on every runtime: the row's Backup and its Export, and the safety dump before a remove
+or a clone.
+
+- **A backup** is mongodump's archive of the database wekan, gzipped (`…-db.archive.gz` beside the project's archive).
+  A dump asked for under a `.sql.gz` name gets the same archive: MongoDB has no SQL.
+- **The row's Import** puts such a dump back. The plugin first checks the whole file (gzip's own check, mongodump's
+  archive, and mongorestore reading it through without writing), and changes nothing when it cannot read it. Then it
+  says what it replaces, replaces the database wekan (`mongorestore --drop`), and starts Wekan again, so it reads its
+  database from the start.
+- **What Wekan keeps beside its database** (attachments, avatars) is in its own volume, not in the dump.
+
 ### The default accounts
 
 | Account | Name | Their role in Webship site |

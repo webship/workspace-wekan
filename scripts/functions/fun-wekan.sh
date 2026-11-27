@@ -177,7 +177,9 @@ DOCKEREOF
     #     still holds the data folder: its MongoDB then stopped at once ("DBPathInUse") while the shell kept the
     #     container up, without a database. MongoDB stops when its container is asked to (the shell passes the signal
     #     on), and a container whose MongoDB stopped stops too, so Kubernetes starts it again.
-    local itself='' pid='' alive='' ;
+    # Its open files may go up to the container's hard limit, as on DDEV: Docker gives a container 1024 by default,
+    # which a restore of Wekan's database went past.
+    local limit='ulimit -n "$(ulimit -Hn)" ; ' itself='' pid='' alive='' ;
     if [ "${runtime}" = 'kubernetes' ] ; then
       itself='grep -qx "127.0.0.1 mongo" /etc/hosts || echo "127.0.0.1 mongo" >> /etc/hosts ; ' ;
       pid=' pid=$! ; trap "kill -TERM $pid ; wait $pid" TERM INT ;' ;
@@ -185,7 +187,7 @@ DOCKEREOF
     fi
     ( cd "${project_path}" \
       && rt_service mongo "${WEKAN_MONGO_IMAGE}" --port 27017 --volume /data/db \
-        --command "sh -c '${itself}mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &${pid} until mongosh --host 127.0.0.1 --quiet --eval \"try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: \\\"rs0\\\", members: [{ _id: 0, host: \\\"mongo:27017\\\" }] }) } quit(1) }\" > /dev/null 2>&1 ; do ${alive}sleep 2 ; done ; wait'" \
+        --command "sh -c '${limit}${itself}mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &${pid} until mongosh --host 127.0.0.1 --quiet --eval \"try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: \\\"rs0\\\", members: [{ _id: 0, host: \\\"mongo:27017\\\" }] }) } quit(1) }\" > /dev/null 2>&1 ; do ${alive}sleep 2 ; done ; wait'" \
       && rt_service wekan "${WEKAN_IMAGE_REPOSITORY}:v${release}" --port 8080 --env-file "${WEKAN_FILES}/env" --volume /data \
       && rt_serve "${WEKAN_SERVE_PORT}" "bash ${WEKAN_FILES}/wekan-serve.sh" ) || return 1 ;
     return 0 ;
@@ -258,6 +260,117 @@ function wekan_service_log() {
     kubernetes) rt_kubectl -n "$(rt_k8s_ns "${root}")" logs "deploy/${service}" --tail "${lines}" < /dev/null 2>/dev/null ;;
   esac
   return 0 ;
+}
+
+# Wekan's database in the core's backups, exports, imports and restores (webship/workspace#937), on every runtime:
+# Wekan keeps it in the project's own MongoDB (the mongo service, its database wekan), where neither DDEV's database
+# nor the runtime's is (the project has none). The core asks wekan_is_project, wekan_export_db and wekan_import_db,
+# and names the dumps after wekan_db_extension.
+
+# Wekan's dumps: mongodump's archive of the database wekan, gzipped.
+function wekan_db_extension() {
+  echo '.archive.gz' ;
+}
+
+# A command in the project's MongoDB container, the project in this folder (or above it), its input and its output
+# passed as they are, since a dump is binary: DDEV's container of the mongo service, or the runtime's.
+function wekan_mongo() {
+  local found rt root name ;
+  found="$(rt_find_project "$PWD" 2> /dev/null)" || { echo "There is no project in ${PWD}." >&2 ; return 1 ; } ;
+  rt="${found%% *}" ; root="${found#* }" ;
+  case "${rt}" in
+    ddev)
+      name="$(sed -n 's/^name:[[:space:]]*"\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}[[:space:]]*$/\1/p' "${root}/.ddev/config.yaml" | head -n 1)" ;
+      docker exec -i "ddev-${name}-mongo" "$@" ;;
+    docker|podman) rt_dc "${rt}" "${root}" exec -T mongo "$@" ;;
+    kubernetes) rt_kubectl -n "$(rt_k8s_ns "${root}")" exec -i deploy/mongo -- "$@" ;;
+    *) echo "Wekan's database is not reached on ${rt} yet." >&2 ; return 1 ;;
+  esac
+}
+
+# What the database holds, in a line: its boards, cards and accounts.
+function wekan_db_counts() {
+  wekan_mongo mongosh --quiet wekan --eval 'const n = (c) => db.getCollection(c).countDocuments({}) ; print(`${n("boards")} board(s), ${n("cards")} card(s), ${n("users")} account(s)`)' < /dev/null 2> /dev/null | tr -d '\r' | tail -n 1 ;
+}
+
+# Wekan's own service, stopped while its database is replaced and started again after, so nothing writes to it in
+# between and it reads it from the start: its service's container on DDEV, Docker Compose and Podman, its Deployment
+# on Kubernetes. Once started it is waited for.   wekan_service <stop|start>
+function wekan_service() {
+  local verb="$1" found rt root name ;
+  found="$(rt_find_project "$PWD" 2> /dev/null)" || return 1 ;
+  rt="${found%% *}" ; root="${found#* }" ;
+  case "${rt}" in
+    ddev)
+      name="$(sed -n 's/^name:[[:space:]]*"\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}[[:space:]]*$/\1/p' "${root}/.ddev/config.yaml" | head -n 1)" ;
+      docker "${verb}" "ddev-${name}-wekan" > /dev/null || return 1 ;;
+    docker|podman) rt_dc "${rt}" "${root}" "${verb}" wekan > /dev/null 2>&1 || return 1 ;;
+    kubernetes)
+      local replicas=1 ; [ "${verb}" = stop ] && replicas=0 ;
+      rt_kubectl -n "$(rt_k8s_ns "${root}")" scale deploy/wekan --replicas="${replicas}" > /dev/null || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "${verb}" = start ] || return 0 ;
+  ( cd "${root}" && wekan_wait > /dev/null ) ;
+}
+
+# Write the database of the Wekan site in this folder to <file>: mongodump's gzipped archive of the database wekan.
+# A name ending in .sql.gz (the safety dump before a remove or a clone asks for one) gets the same archive: MongoDB has
+# no SQL, and wekan_import_db reads the archive under any name.
+function wekan_export_db() {
+  local file="$1" counts ;
+  if [ -z "${file}" ] ; then
+    echo "wekan_export_db: where to write the dump (a file)." >&2 ;
+    return 1 ;
+  fi
+  if ! wekan_mongo mongodump --quiet --archive --gzip --db=wekan < /dev/null > "${file}" ; then
+    rm -f "${file}" ;
+    echo "Wekan's database could not be dumped: is the site running?" >&2 ;
+    return 1 ;
+  fi
+  if [ ! -s "${file}" ] || ! gzip -t "${file}" 2> /dev/null ; then
+    rm -f "${file}" ;
+    echo "Wekan's database could not be dumped whole: nothing was written." >&2 ;
+    return 1 ;
+  fi
+  counts="$(wekan_db_counts)" ;
+  echo "Wekan's database (${counts:-the database wekan}) is in ${file##*/}." ;
+}
+
+# Put <file> back as the database of the Wekan site in this folder. It reads Wekan's own dumps only (mongodump's
+# gzipped archive, under any name), checks the whole file first, and changes nothing when it cannot read it through;
+# it says what it replaces, replaces the database wekan, and starts Wekan again.
+function wekan_import_db() {
+  local file="$1" magic now after ;
+  if [ ! -s "${file}" ] ; then
+    echo "There is no dump at ${file}: nothing was changed." >&2 ;
+    return 1 ;
+  fi
+  # Whole: gzip's own check reads the file to its end. Then mongodump's archive: its first four bytes (0x8199e26d).
+  if ! gzip -t "${file}" 2> /dev/null ; then
+    echo "${file##*/} is not a whole gzipped file: nothing was changed." >&2 ;
+    return 1 ;
+  fi
+  magic="$(gzip -dc "${file}" 2> /dev/null | head -c 4 | od -An -tx1 | tr -d ' \n')" ;
+  if [ "${magic}" != '6de29981' ] ; then
+    echo "${file##*/} is not a dump of Wekan's database (mongodump's gzipped archive): nothing was changed." >&2 ;
+    return 1 ;
+  fi
+  if ! wekan_mongo mongorestore --quiet --archive --gzip --dryRun --nsInclude='wekan.*' < "${file}" > /dev/null 2>&1 ; then
+    echo "${file##*/} cannot be read through by mongorestore: nothing was changed." >&2 ;
+    return 1 ;
+  fi
+  now="$(wekan_db_counts)" ;
+  echo "Wekan's database (${now:-the database wekan}) is replaced with ${file##*/}: Wekan is stopped meanwhile." ;
+  wekan_service stop || echo "Wekan could not be stopped: its database is replaced while it runs." >&2 ;
+  if ! wekan_mongo mongorestore --quiet --archive --gzip --drop --nsInclude='wekan.*' < "${file}" ; then
+    echo "mongorestore stopped: Wekan's database may hold part of the dump only. Import the dump again." >&2 ;
+    wekan_service start > /dev/null 2>&1 ;
+    return 1 ;
+  fi
+  wekan_service start || echo "Wekan did not answer after it was started again; start the site again." >&2 ;
+  after="$(wekan_db_counts)" ;
+  echo "Wekan's database is the dump's now: ${after:-its data}." ;
 }
 
 # Run a verb of wekan-site.mjs (install, accounts, content, tidy, list, token, counts) in the project's web container,

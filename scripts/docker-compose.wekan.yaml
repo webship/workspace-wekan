@@ -19,11 +19,15 @@ services:
     restart: "no"
     expose:
       - "27017"
-    # A replica set of one (rs0), initiated once it answers: Wekan follows its changes as they happen.
+    # A replica set of one (rs0), initiated once it answers: Wekan follows its changes as they happen. Its open files
+    # may go up to the container's hard limit first: Docker gives a container 1024 by default, and a restore of Wekan's
+    # database (each of its collections and indexes made again) went past it ("WiredTiger error 24", then a fatal
+    # assertion, and MongoDB stopped).
     command:
       - sh
       - -c
       - |
+        ulimit -n "$$(ulimit -Hn)"
         mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet &
         until mongosh --host 127.0.0.1 --quiet --eval 'try { quit(rs.status().ok === 1 ? 0 : 1) } catch (e) { if (/NotYetInitialized|no replset config|not yet initialized/.test(String(e.codeName) + String(e.message))) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }) } quit(1) }' > /dev/null 2>&1 ; do sleep 2 ; done
         wait
