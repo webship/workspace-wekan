@@ -4,9 +4,9 @@ Wekan, the open-source kanban board, for the [Webship Workspace](https://github.
 container-based workspace (DDEV by default). The plugin brings:
 
 - **a builder**, `cmd-wekan-project.sh`: a real Wekan site from Wekan's own image on the project's own MongoDB 7, on
-  DDEV, with the workspace account as Wekan's first account and administrator, the default accounts in their roles of
-  a sample board, and its cards in the board's lists, a label, an assignee, a comment, a checklist, Scrum planning
-  with an active sprint, and a day of logged time;
+  DDEV, Docker Compose, Podman or Kubernetes, with the workspace account as Wekan's first account and administrator,
+  the default accounts in their roles of a sample board, and its cards in the board's lists, a label, an assignee, a
+  comment, a checklist, Scrum planning with an active sprint, and a day of logged time;
 - **a tool**, `cmd-tools-wekan-cli.sh`: what a site is and its accounts, the default accounts, the sample content, a
   clean-up after a stopped test run, and the dashboard's connection;
 - **the step pack** [`@webship-js/wekan-steps`](https://github.com/webship/wekan-steps) wired into the workspace's
@@ -31,8 +31,8 @@ bash core/scripts/plugins.sh --configure wekan
 
 - A sites folder: one of the `dev`, `test`, `sandboxes` or `demos` plugins. The commands are placed there.
 - The AI folders `ai-agents`, `ai-skills`, `ai-commands` and `ai-prompts`, where its AI items land.
-- DDEV, the container runtime Wekan is proven on so far. Docker Compose, Podman and Kubernetes are not proven for it
-  yet: asked for one, the builder says so and changes nothing.
+- A container runtime: DDEV (the default), Docker Compose, Podman or Kubernetes (`--runtime`). Lando and Docksal are
+  not proven for it yet: asked for one, the builder says so and changes nothing.
 - A download of about 600 MB for the two images the first time, and memory: the builder asks for 1.5 GB free before
   it starts (`free -m`).
 
@@ -49,7 +49,7 @@ bash cmd-wekan-project.sh mysite --install --add-users --sample-content
 | `--add-users` | With `--install`: the default accounts, in their roles of the board Webship site |
 | `--sample-content` | With `--install --add-users`: three cards of Webship site in its lists, a label, an assignee, a comment, a checklist, Scrum planning with Sprint 1 active, and half an hour of logged time |
 | `--release <X.Y>` | The release of Wekan's image (tagged `v<X.Y>`): 13.33 by default |
-| `--runtime ddev` | DDEV, the runtime proven for Wekan so far (the default, or `container.runtime` of `settings.yml`) |
+| `--runtime <runtime>` | `ddev` (the default, or `container.runtime` of `settings.yml`), `docker` (Docker Compose), `podman` or `kubernetes` |
 | `--launch` | Open the site when it is ready |
 
 A project of the same name is deleted first, with its database and its files. Wekan's own image is a service of a
@@ -89,6 +89,40 @@ which only you can read. The builder never prints them.
 **Failed sign-ins.** Wekan locks an account for 60 seconds after three wrong passwords within 15 seconds, and an
 unknown account the same way. A test suite tries one wrong password at a time, so a site the workspace builds keeps
 Wekan's own settings.
+
+### On Docker Compose, Podman and Kubernetes
+
+```bash
+bash cmd-wekan-project.sh mysite --install --add-users --sample-content --runtime docker   # or podman, kubernetes
+```
+
+The builder works through the Workspace's runtime layer there, and the site is the same: Wekan 13.33 on the project's
+own MongoDB 7, the same accounts and the same sample content, at the address the runtime gives it
+(`http://127.0.0.1:<port>`, or the node's address and a NodePort on Kubernetes). The stack's Mailpit catches its mail.
+The project has the same layout as on DDEV:
+
+- **Wekan's own image, unchanged, is a service of the project** (`rt_service wekan`), with what it keeps beside its
+  database in a volume of the project's own. Wekan's image has no shell, which the runtime layer asks of a web
+  container's image, so it is not the web container.
+- **MongoDB 7 is another** (`rt_service mongo`), started as on DDEV: a replica set of one, initiated once it answers.
+  Its data is in a volume of the project's own. Wekan waits for the set's primary when it starts. Two things more on
+  Kubernetes, found by stopping and starting a project on kind:
+  - MongoDB's own name leads to its own container (a line of its `/etc/hosts`). Through its Service the name reaches
+    the pod only once the pod is ready, and MongoDB, started again, did not find itself in its replica set and had no
+    primary.
+  - A stop and a start scale the project to none and back to one at once, so a new pod can start while the old one
+    still holds MongoDB's data folder. The service's shell passes a stop on to MongoDB, and ends when MongoDB ends, so
+    Kubernetes starts such a container again.
+- **The web container is a Node.js 24 stack** (`rt_stack node 24`). Its nginx, run as the host user (`rt_serve`,
+  `wekan/wekan-serve.sh`, with the project's `wekan/nginx.conf`), passes the project's address to Wekan at
+  `wekan:8080`, websockets included: Wekan's screens follow a board over one. nginx looks Wekan's address up while it
+  runs, with the container's own DNS server: Wekan's container, started again on its own, may come back on another
+  address (Podman gives it one).
+- **The site script** runs in the web container there, with Node.js, against `http://wekan:8080`, as on DDEV.
+- **No MariaDB:** the project's database is its MongoDB.
+
+The project's volumes go with it when it is removed (`cmd-tools-remove.sh`), and when a project of the same name is
+built again.
 
 ### The default accounts
 
@@ -208,7 +242,7 @@ GITLAB) when its remote is on a forge.
   disagree. The time logged on a card is read in Wekan itself, and the step pack reads it there.
   ([webship/workspace-wekan#2](https://github.com/webship/workspace-wekan/issues/2) keeps what was proven with those
   methods.)
-- **Other runtimes.** Docker Compose, Podman and Kubernetes are not proven for Wekan yet.
+- **Lando and Docksal.** Wekan is not proven on them yet.
 
 ## Testing a site
 

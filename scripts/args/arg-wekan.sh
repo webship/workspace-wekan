@@ -6,8 +6,8 @@ parser.add_argument('PROJECT_NAME',
 parser.add_argument('--runtime',
                     dest='RUNTIME',
                     default="_none_",
-                    choices=['ddev'],
-                    help='The container runtime to build on: ddev (the default). Wekan is not proven on the other runtimes yet.')
+                    choices=['ddev', 'docker', 'podman', 'kubernetes'],
+                    help='The container runtime to build on: ddev (the default), docker (Docker Compose), podman or kubernetes. Wekan is not proven on Lando or Docksal yet.')
 parser.add_argument('-i', '--install',
                     action='store_true',
                     default=False,

@@ -5,10 +5,11 @@
 # Installed by the Wekan plugin (plugins.sh --install wekan); __WORKSPACE__ is the workspace it was installed into.
 #
 # Build a Wekan site in containers from Wekan's own image, on the project's own MongoDB 7 (Wekan needs a
-# MongoDB-compatible database): on DDEV at https://<name>.ddev.site. With --install the workspace account is Wekan's
-# first account, its administrator, and the sign-up is off; with --add-users the default accounts are in their roles of
-# the board Webship site; with --sample-content its cards in the board's lists, a label, an assignee, a comment, a
-# checklist, Scrum planning with an active sprint, and a day of logged time.
+# MongoDB-compatible database): on DDEV at https://<name>.ddev.site, or with --runtime docker, podman or kubernetes at
+# the address the runtime gives it. With --install the workspace account is Wekan's first account, its administrator,
+# and the sign-up is off; with --add-users the default accounts are in their roles of the board Webship site; with
+# --sample-content its cards in the board's lists, a label, an assignee, a comment, a checklist, Scrum planning with an
+# active sprint, and a day of logged time.
 
 # Bootstrap.
 # Find the workspace tooling from this script, so a fresh clone needs no setup.

@@ -63,6 +63,8 @@
       "machine": [
         "scripts/docker-compose.wekan.yaml",
         "scripts/wekan-site.mjs",
+        "scripts/wekan-serve.sh",
+        "scripts/wekan-proxy.conf",
         "testing/site.feature"
       ]
     },
@@ -84,8 +86,10 @@
       ]
     },
     "features": [
-      "features/wekan.feature"
-    ]
+      "features/wekan.feature",
+      "features/wekan-runtimes.feature"
+    ],
+    "featuresSite": "cmd-wekan-project.sh ci-wekan --install --add-users --sample-content --runtime docker"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
