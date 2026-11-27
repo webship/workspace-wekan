@@ -230,17 +230,19 @@ test('on Docker Compose, Podman and Kubernetes: Wekan\'s image and MongoDB\'s as
       assert.strictEqual(mongo.length, 3, `${runtime}: the line is one word of sh -c`);
       // On Kubernetes MongoDB's own name leads to its own container: through its Service it leads to the pod only once
       // the pod is ready, and MongoDB started again did not find itself in its replica set (REMOVED, no primary).
+      const limit = 'ulimit -n "$(ulimit -Hn)" ; ';
+      assert.ok(mongo[2].startsWith(limit), `${runtime}: its open files up to the container's hard limit`);
       const itself = 'grep -qx "127.0.0.1 mongo" /etc/hosts || echo "127.0.0.1 mongo" >> /etc/hosts ; ';
-      if (runtime === 'kubernetes') assert.ok(mongo[2].startsWith(itself), `${runtime}: MongoDB finds itself in its replica set from the start`);
+      if (runtime === 'kubernetes') assert.ok(mongo[2].slice(limit.length).startsWith(itself), `${runtime}: MongoDB finds itself in its replica set from the start`);
       else assert.ok(!mongo[2].includes('/etc/hosts'), `${runtime}: the name already leads to the container itself`);
       if (runtime === 'kubernetes') {
         // A stop scales the project to none and a start back to one at once: the new pod's MongoDB found the old one's
         // data folder still held and stopped, while the shell kept the container up. The shell passes a stop on, and
         // ends when MongoDB has ended, so Kubernetes starts the container again.
-        assert.match(mongo[2].slice(itself.length), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & pid=\$! ; trap "kill -TERM \$pid ; wait \$pid" TERM INT ; until mongosh /, runtime);
+        assert.match(mongo[2].slice(limit.length + itself.length), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & pid=\$! ; trap "kill -TERM \$pid ; wait \$pid" TERM INT ; until mongosh /, runtime);
         assert.match(mongo[2], / ; do kill -0 \$pid 2> \/dev\/null \|\| exit 1 ; sleep 2 ; done ; wait$/, `${runtime}: the container ends with MongoDB`);
       } else {
-        assert.match(mongo[2], /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & until mongosh /, runtime);
+        assert.match(mongo[2].slice(limit.length), /^mongod --storageEngine wiredTiger --wiredTigerCacheSizeGB 0\.25 --oplogSize 256 --replSet rs0 --bind_ip_all --quiet & until mongosh /, runtime);
         assert.match(mongo[2], / ; do sleep 2 ; done ; wait$/, `${runtime}: mongod stays the service's process, as on DDEV`);
       }
       const evaluated = words(mongo[2].slice(mongo[2].indexOf('--eval '), mongo[2].indexOf(' > /dev/null')))[1];
@@ -333,6 +335,91 @@ test('nginx looks Wekan up while it runs, by the container\'s own DNS server, un
   } finally {
     removeTestDir(dir);
   }
+});
+
+/** The database hook's functions with the MongoDB container stood in (wekan_mongo, wekan_service): its calls, its result. */
+function hook(fn: string, file: string, mongo: string): { status: number, out: string, calls: string[] } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wekan-runtimes-'));
+  try {
+    const log = path.join(dir, 'calls.log');
+    const script = [
+      `source "${path.join(PKG, 'scripts/functions/fun-wekan.sh')}"`,
+      // The container: mongodump writes a gzipped archive with mongodump's own first bytes; mongorestore reads its input.
+      `wekan_mongo() { echo "$*" >> "${log}" ; ${mongo} }`,
+      `wekan_service() { echo "service $1" >> "${log}" ; }`,
+      `${fn} "${file}"`,
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
+    return { status: r.status ?? 1, out: r.stdout + r.stderr, calls };
+  } finally {
+    removeTestDir(dir);
+  }
+}
+
+test('Wekan\'s database in the core\'s backups and restores: mongodump\'s gzipped archive, checked whole before mongorestore replaces it', () => {
+  for (const name of ['wekan_is_project', 'wekan_export_db', 'wekan_import_db', 'wekan_db_extension']) {
+    assert.match(FUN, new RegExp(`^function ${name}\\(\\) \\{`, 'm'), `${name}: the core's hook (webship/workspace#937) asks it`);
+  }
+  assert.match(fn('wekan_db_extension'), /echo '\.archive\.gz' ;/);
+  assert.match(fn('wekan_export_db'), /wekan_mongo mongodump --quiet --archive --gzip --db=wekan < \/dev\/null > "\$\{file\}"/, 'the database wekan, as an archive on the output');
+  const archive = `case "$1" in mongodump) printf '\\x6d\\xe2\\x99\\x81rest of an archive' | gzip ;; mongosh) echo '1 board(s), 3 card(s), 5 account(s)' ;; mongorestore) cat > /dev/null ;; esac ;`;
+  // The export: the archive in the file, said with what it holds.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wekan-runtimes-'));
+  try {
+    const file = path.join(dir, 'site-db.archive.gz');
+    const script = `source "${path.join(PKG, 'scripts/functions/fun-wekan.sh')}"\nwekan_mongo() { ${archive} }\nwekan_export_db "${file}"`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /Wekan's database \(1 board\(s\), 3 card\(s\), 5 account\(s\)\) is in site-db\.archive\.gz\./);
+    assert.strictEqual(spawnSync('bash', ['-c', `gzip -dc "${file}" | head -c 4 | od -An -tx1 | tr -d ' \\n'`], { encoding: 'utf8' }).stdout, '6de29981');
+    // A dump that fails leaves no file behind.
+    const broken = path.join(dir, 'broken.archive.gz');
+    const r2 = spawnSync('bash', ['-c', `source "${path.join(PKG, 'scripts/functions/fun-wekan.sh')}"\nwekan_mongo() { return 1 ; }\nwekan_export_db "${broken}"`], { encoding: 'utf8' });
+    assert.notStrictEqual(r2.status, 0);
+    assert.ok(!fs.existsSync(broken), 'no dump left behind');
+    // The import: what is not a whole gzip, or not mongodump's archive, changes nothing.
+    fs.writeFileSync(path.join(dir, 'plain.sql'), 'CREATE TABLE t (id int);\n');
+    spawnSync('bash', ['-c', `printf 'CREATE TABLE t (id int);\\n' | gzip > "${dir}/mariadb.sql.gz" ; printf '\\x6d\\xe2\\x99\\x81whole' | gzip > "${dir}/cut.archive.gz" ; truncate -s 20 "${dir}/cut.archive.gz"`]);
+    const refused: [string, RegExp][] = [['plain.sql', /is not a whole gzipped file: nothing was changed/], ['mariadb.sql.gz', /is not a dump of Wekan's database \(mongodump's gzipped archive\): nothing was changed/], ['cut.archive.gz', /is not a whole gzipped file: nothing was changed/], ['none.archive.gz', /There is no dump at .*: nothing was changed/]];
+    for (const [f, said] of refused) {
+      const h = hook('wekan_import_db', path.join(dir, f), archive);
+      assert.notStrictEqual(h.status, 0, `${f} is refused`);
+      assert.match(h.out, said, f);
+      assert.ok(!h.calls.some((c) => /--drop/.test(c)), `${f}: the database is left as it is`);
+    }
+  } finally {
+    removeTestDir(dir);
+  }
+  // A whole archive: read through first (--dryRun), then the database wekan replaced (--drop) and Wekan started again.
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wekan-runtimes-'));
+  try {
+    const file = path.join(dir2, 'site-db.sql.gz');
+    spawnSync('bash', ['-c', `printf '\\x6d\\xe2\\x99\\x81whole' | gzip > "${file}"`]);
+    const log = path.join(dir2, 'calls.log');
+    const script = `source "${path.join(PKG, 'scripts/functions/fun-wekan.sh')}"\nwekan_mongo() { echo "$*" >> "${log}" ; ${archive} }\nwekan_service() { echo "service $1" >> "${log}" ; }\nwekan_import_db "${file}"`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').filter((c) => !c.startsWith('mongosh'));
+    assert.deepStrictEqual(calls, [
+      "mongorestore --quiet --archive --gzip --dryRun --nsInclude=wekan.*",
+      'service stop',
+      "mongorestore --quiet --archive --gzip --drop --nsInclude=wekan.*",
+      'service start',
+    ], 'read through first, then replaced with Wekan stopped, under its .sql.gz name too');
+    assert.match(r.stdout, /Wekan's database \(1 board\(s\), 3 card\(s\), 5 account\(s\)\) is replaced with site-db\.sql\.gz: Wekan is stopped meanwhile\./, 'it says what it replaces');
+  } finally {
+    removeTestDir(dir2);
+  }
+  assert.match(fn('wekan_mongo'), /ddev\)\n[^\n]*\n\s+docker exec -i "ddev-\$\{name\}-mongo" "\$@" ;;/, 'DDEV\'s container of the mongo service');
+  assert.match(fn('wekan_mongo'), /docker\|podman\) rt_dc "\$\{rt\}" "\$\{root\}" exec -T mongo "\$@" ;;/);
+  assert.match(fn('wekan_mongo'), /kubernetes\) rt_kubectl -n "\$\(rt_k8s_ns "\$\{root\}"\)" exec -i deploy\/mongo -- "\$@" ;;/);
+  assert.match(fn('wekan_service'), /kubernetes\)\n\s+local replicas=1 ; \[ "\$\{verb\}" = stop \] && replicas=0 ;/, 'on Kubernetes its Deployment scaled to none and back');
+  // MongoDB's open files up to the container's hard limit, on every runtime: Docker's default soft limit (1024) was
+  // passed by a restore of Wekan's collections and indexes, and MongoDB stopped.
+  assert.match(read('scripts/docker-compose.wekan.yaml'), /- \|\n\s+ulimit -n "\$\$\(ulimit -Hn\)"\n\s+mongod --storageEngine/, 'on DDEV, its $ escaped for compose');
+  assert.match(FUN, /local limit='ulimit -n "\$\(ulimit -Hn\)" ; '/);
+  assert.match(read('README.md'), /mongodump's archive of the database wekan, gzipped/, 'the README says how the site is backed up');
 });
 
 test('the functions carry the names the core\'s tools look for; --connect keeps the token off screens and command lines', () => {
