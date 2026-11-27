@@ -105,14 +105,16 @@ The project has the same layout as on DDEV:
   database in a volume of the project's own. Wekan's image has no shell, which the runtime layer asks of a web
   container's image, so it is not the web container.
 - **MongoDB 7 is another** (`rt_service mongo`), started as on DDEV: a replica set of one, initiated once it answers.
-  Its data is in a volume of the project's own. Wekan waits for the set's primary when it starts. Two things more on
-  Kubernetes, found by stopping and starting a project on kind:
+  Its data is in a volume of the project's own. Wekan waits for the set's primary when it starts. The service's shell
+  passes a stop on to MongoDB, so a project's stop is MongoDB's own clean shutdown, and it ends when MongoDB ends, with
+  MongoDB's own code: a MongoDB that crashes comes back, on Docker Compose and Podman through the Workspace's restart
+  policy of a project's own services (webship/workspace#959), on Kubernetes as a pod's container does. Two things more
+  on Kubernetes, found by stopping and starting a project on kind:
   - MongoDB's own name leads to its own container (a line of its `/etc/hosts`). Through its Service the name reaches
     the pod only once the pod is ready, and MongoDB, started again, did not find itself in its replica set and had no
     primary.
   - A stop and a start scale the project to none and back to one at once, so a new pod can start while the old one
-    still holds MongoDB's data folder. The service's shell passes a stop on to MongoDB, and ends when MongoDB ends, so
-    Kubernetes starts such a container again.
+    still holds MongoDB's data folder. That MongoDB stops, the container ends with it, and Kubernetes starts it again.
 - **The web container is a Node.js 24 stack** (`rt_stack node 24`). Its nginx, run as the host user (`rt_serve`,
   `wekan/wekan-serve.sh`, with the project's `wekan/nginx.conf`), passes the project's address to Wekan at
   `wekan:8080`, websockets included: Wekan's screens follow a board over one. nginx looks Wekan's address up while it
