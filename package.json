@@ -1,6 +1,6 @@
 {
   "name": "@webship.co/workspace-wekan",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Wekan for Webship Workspace: the builder (`cmd-wekan-project.sh`, a site of the open-source kanban board, from Wekan's own image on the project's own MongoDB 7, in containers: DDEV, with the default accounts in their roles of a sample board and its cards in the board's lists) and its tool in every sites folder, the Wekan step pack wired into the testing setup, the cards of a Wekan board as work items of the tracker family (list, read, analyze, and do the work with the workspace's AI CLI on a branch; comments, moves to another list, archiving, labels and assignees after a person's click, writes off by default), and its AI items in their folders.",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
